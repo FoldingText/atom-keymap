@@ -1,16 +1,10 @@
 _ = require "underscore-plus"
-CSON = require 'season'
 Grim = require 'grim'
-fs = require 'fs-plus'
-{observeCurrentKeyboardLayout} = require 'keyboard-layout'
-path = require 'path'
 EmitterMixin = require('emissary').Emitter
-{File} = require 'pathwatcher'
 {Emitter, Disposable, CompositeDisposable} = require 'event-kit'
 KeyBinding = require './key-binding'
 CommandEvent = require './command-event'
 {normalizeKeystrokes, keystrokeForKeyboardEvent, isAtomModifier, keydownEvent} = require './helpers'
-
 Platforms = ['darwin', 'freebsd', 'linux', 'sunos', 'win32']
 OtherPlatforms = Platforms.filter (platform) -> platform isnt process.platform
 
@@ -99,7 +93,6 @@ class KeymapManager
   defaultTarget: null
   pendingPartialMatches: null
   pendingStateTimeoutHandle: null
-  dvorakQwertyWorkaroundEnabled: false
 
   ###
   Section: Construction and Destruction
@@ -118,19 +111,9 @@ class KeymapManager
     @keyBindings = []
     @queuedKeyboardEvents = []
     @queuedKeystrokes = []
-    @watchSubscriptions = {}
-    @enableDvorakQwertyWorkaroundIfNeeded()
 
-  # Public: Unwatch all watched paths.
   destroy: ->
-    @keyboardLayoutSubscription.dispose()
-    for filePath, subscription of @watchSubscriptions
-      subscription.dispose()
     undefined
-
-  enableDvorakQwertyWorkaroundIfNeeded: ->
-    @keyboardLayoutSubscription = observeCurrentKeyboardLayout (layoutId) =>
-      @dvorakQwertyWorkaroundEnabled = layoutId is 'com.apple.keylayout.DVORAK-QWERTYCMD'
 
   ###
   Section: Event Subscription
@@ -179,37 +162,6 @@ class KeymapManager
   # Returns a {Disposable} on which `.dispose()` can be called to unsubscribe.
   onDidFailToMatchBinding: (callback) ->
     @emitter.on 'did-fail-to-match-binding', callback
-
-  # Invoke the given callback when a keymap file is reloaded.
-  #
-  # * `callback` {Function} to be called when a keymap file is reloaded.
-  #   * `event` {Object} with the following keys:
-  #     * `path` {String} representing the path of the reloaded keymap file.
-  #
-  # Returns a {Disposable} on which `.dispose()` can be called to unsubscribe.
-  onDidReloadKeymap: (callback) ->
-    @emitter.on 'did-reload-keymap', callback
-
-  # Invoke the given callback when a keymap file is unloaded.
-  #
-  # * `callback` {Function} to be called when a keymap file is unloaded.
-  #   * `event` {Object} with the following keys:
-  #     * `path` {String} representing the path of the unloaded keymap file.
-  #
-  # Returns a {Disposable} on which `.dispose()` can be called to unsubscribe.
-  onDidUnloadKeymap: (callback) ->
-    @emitter.on 'did-unload-keymap', callback
-
-  # Public: Invoke the given callback when a keymap file not able to be loaded.
-  #
-  # * `callback` {Function} to be called when a keymap file is unloaded.
-  #   * `error` {Object} with the following keys:
-  #     * `message` {String} the error message.
-  #     * `stack` {String} the error stack trace.
-  #
-  # Returns a {Disposable} on which `.dispose()` can be called to unsubscribe.
-  onDidFailToReadFile: (callback) ->
-    @emitter.on 'did-fail-to-read-file', callback
 
   on: (eventName) ->
     switch eventName
@@ -313,85 +265,6 @@ class KeymapManager
         bindings.push(matchingBindings...)
         element = element.parentElement
     bindings
-
-
-  ###
-  Section: Managing Keymap Files
-  ###
-
-  # Public: Load the key bindings from the given path.
-  #
-  # * `path` A {String} containing a path to a file or a directory. If the path is
-  #   a directory, all files inside it will be loaded.
-  # * `options` An {Object} containing the following optional keys:
-  #   * `watch` If `true`, the keymap will also reload the file at the given
-  #     path whenever it changes. This option cannot be used with directory paths.
-  loadKeymap: (bindingsPath, options) ->
-    checkIfDirectory = options?.checkIfDirectory ? true
-    if checkIfDirectory and fs.isDirectorySync(bindingsPath)
-      for filePath in fs.listSync(bindingsPath, ['.cson', '.json'])
-        if @filePathMatchesPlatform(filePath)
-          @loadKeymap(filePath, checkIfDirectory: false)
-    else
-      @addKeymap(bindingsPath, @readKeymap(bindingsPath, options?.suppressErrors))
-      @watchKeymap(bindingsPath) if options?.watch
-
-    undefined
-
-  # Public: Cause the keymap to reload the key bindings file at the given path
-  # whenever it changes.
-  #
-  # This method doesn't perform the initial load of the key bindings file. If
-  # that's what you're looking for, call {::loadKeymap} with `watch: true`.
-  #
-  # * `path` A {String} containing a path to a file or a directory. If the path is
-  #   a directory, all files inside it will be loaded.
-  watchKeymap: (filePath) ->
-    if not @watchSubscriptions[filePath]? or @watchSubscriptions[filePath].disposed
-      file = new File(filePath)
-      reloadKeymap = => @reloadKeymap(filePath)
-      @watchSubscriptions[filePath] = new CompositeDisposable(
-        file.onDidChange(reloadKeymap)
-        file.onDidRename(reloadKeymap)
-        file.onDidDelete(reloadKeymap)
-      )
-
-    undefined
-
-  # Called by the path watcher callback to reload a file at the given path. If
-  # we can't read the file cleanly, we don't proceed with the reload.
-  reloadKeymap: (filePath) ->
-    if fs.isFileSync(filePath)
-      if bindings = @readKeymap(filePath, true)
-        @removeBindingsFromSource(filePath)
-        @addKeymap(filePath, bindings)
-        @emit 'reloaded-key-bindings', filePath
-        @emitter.emit 'did-reload-keymap', {path: filePath}
-    else
-      @removeBindingsFromSource(filePath)
-      @emit 'unloaded-key-bindings', filePath
-      @emitter.emit 'did-unload-keymap', {path: filePath}
-
-  readKeymap: (filePath, suppressErrors) ->
-    if suppressErrors
-      try
-        CSON.readFileSync(filePath)
-      catch error
-        console.warn("Failed to reload key bindings file: #{filePath}", error.stack ? error)
-        @emitter.emit 'did-fail-to-read-file', error
-        undefined
-    else
-      CSON.readFileSync(filePath)
-
-  # Determine if the given path should be loaded on this platform. If the
-  # filename has the pattern '<platform>.cson' or 'foo.<platform>.cson' and
-  # <platform> does not match the current platform, returns false. Otherwise
-  # returns true.
-  filePathMatchesPlatform: (filePath) ->
-    otherPlatforms = @getOtherPlatforms()
-    for component in path.basename(filePath).split('.')[0...-1]
-      return false if component in otherPlatforms
-    true
 
   ###
   Section: Managing Keyboard Events
@@ -497,7 +370,7 @@ class KeymapManager
   #
   # Returns a {String} describing the keystroke.
   keystrokeForKeyboardEvent: (event) ->
-    keystrokeForKeyboardEvent(event, @dvorakQwertyWorkaroundEnabled)
+    keystrokeForKeyboardEvent(event, false)
 
   # Public: Get the number of milliseconds allowed before pending states caused
   # by partial matches of multi-keystroke bindings are terminated.
