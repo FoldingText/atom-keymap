@@ -1,7 +1,7 @@
 _ = require "underscore-plus"
-Grim = require 'grim'
+Grim = require 'atom/grim/lib/grim'
 EmitterMixin = require('emissary').Emitter
-{Emitter, Disposable, CompositeDisposable} = require 'event-kit'
+{Emitter, Disposable, CompositeDisposable} = require 'atom/event-kit/lib/event-kit'
 KeyBinding = require './key-binding'
 CommandEvent = require './command-event'
 {normalizeKeystrokes, keystrokeForKeyboardEvent, isAtomModifier, keydownEvent} = require './helpers'

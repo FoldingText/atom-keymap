@@ -1,10 +1,8 @@
-Grim = require 'grim'
+Grim = require 'atom/grim/lib/grim'
 {calculateSpecificity} = require './helpers'
 
 module.exports =
 class KeyBinding
-  PropertyAccessors.includeInto(this)
-
   @currentIndex: 1
   enabled: true
 
